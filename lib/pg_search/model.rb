@@ -37,36 +37,33 @@ module PgSearch
           feature.send(:column_to_tsvector, column)
         end.join(' || ') + ' as _pg_search_vector'
 
-        self.pg_search_tsvector_scope = unscoped
-          .joins(scope_options.send(:subquery_join))
-          .select(computed_vector_sql)
+        define_singleton_method(:pg_search_tsvector_scope) do
+          self.joins(scope_options.send(:subquery_join))
+            .select(computed_vector_sql)
+        end
+
+        define_singleton_method(:pg_search_reindex) do
+          ActiveRecord::Base.connection.execute(
+            <<-SQL.squish
+              update #{self.table_name}
+                set #{self.pg_search_column} = _pg_search_vector
+                from (#{self.select("#{self.table_name}.id").pg_search_tsvector_scope.to_sql}) subquery
+                where #{self.table_name}.id = subquery.id
+            SQL
+          )
+        end
 
         after_save :update_pg_search_column
-      end
-
-      def reindex
-        subquery = self.class.pg_search_tsvector_scope
-
-        ActiveRecord::Base.connection.execute(
-          <<-SQL.squish
-            update #{self.class.table_name}
-              set #{self.class.pg_search_column} = _pg_search_vector
-              from (#{subquery.to_sql}) subquery
-              where id = subquery.id
-          SQL
-        )
       end
     end
 
     def update_pg_search_column
-      subquery = self.class.pg_search_tsvector_scope.where(id: id)
-
       ActiveRecord::Base.connection.execute(
         <<-SQL.squish
           update #{self.class.table_name}
             set #{self.class.pg_search_column} = _pg_search_vector
-            from (#{subquery.to_sql}) subquery
-            where id = #{id}
+            from (#{self.class.pg_search_tsvector_scope.where(id: id).to_sql}) subquery
+            where #{self.class.table_name}.id = #{id}
         SQL
       )
     end
