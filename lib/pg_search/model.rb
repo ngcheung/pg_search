@@ -26,6 +26,42 @@ module PgSearch
         class_attribute :pg_search_multisearchable_options
         self.pg_search_multisearchable_options = options
       end
+
+      def pg_search_column(name, options)
+        class_attribute :pg_search_column, :pg_search_tsvector_joins, :pg_search_computed_vector_sql
+        self.pg_search_column = name
+
+        scope_options = ScopeOptions.new(Configuration.new(options, self))
+        self.pg_search_tsvector_joins = scope_options.send(:subquery_join)
+
+        feature = scope_options.send(:feature_for, :tsearch)
+        self.pg_search_computed_vector_sql = feature.send(:columns).map do |column|
+          feature.send(:column_to_tsvector, column)
+        end.join(' || ')
+
+        after_save :update_pg_search_column
+      end
+
+      def reindex
+        ActiveRecord::Base.connection.execute(
+          <<-SQL.squish
+            update #{self.class.table_name}
+            #{self.class.pg_search_tsvector_joins}
+            set #{self.class.pg_search_column} = #{self.class.pg_search_computed_vector_sql}
+          SQL
+        )
+      end
+    end
+
+    def update_pg_search_column
+      ActiveRecord::Base.connection.execute(
+        <<-SQL.squish
+            update #{self.class.table_name}
+              #{self.class.pg_search_tsvector_joins}
+              set #{self.class.pg_search_column} = #{self.class.pg_search_computed_vector_sql}
+              where id = #{id}
+          SQL
+      )
     end
 
     def method_missing(symbol, *args)
