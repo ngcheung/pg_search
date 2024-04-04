@@ -28,39 +28,46 @@ module PgSearch
       end
 
       def pg_search_column(name, options)
-        class_attribute :pg_search_column, :pg_search_tsvector_joins, :pg_search_computed_vector_sql
+        class_attribute :pg_search_column, :pg_search_tsvector_scope
         self.pg_search_column = name
 
         scope_options = ScopeOptions.new(Configuration.new(options, self))
-        self.pg_search_tsvector_joins = scope_options.send(:subquery_join)
-
         feature = scope_options.send(:feature_for, :tsearch)
-        self.pg_search_computed_vector_sql = feature.send(:columns).map do |column|
+        computed_vector_sql = feature.send(:columns).map do |column|
           feature.send(:column_to_tsvector, column)
-        end.join(' || ')
+        end.join(' || ') + ' as _pg_search_vector'
+
+        self.pg_search_tsvector_scope = unscoped
+          .joins(scope_options.send(:subquery_join))
+          .select(computed_vector_sql)
 
         after_save :update_pg_search_column
       end
 
       def reindex
+        subquery = self.class.pg_search_tsvector_scope
+
         ActiveRecord::Base.connection.execute(
           <<-SQL.squish
             update #{self.class.table_name}
-            #{self.class.pg_search_tsvector_joins}
-            set #{self.class.pg_search_column} = #{self.class.pg_search_computed_vector_sql}
+              set #{self.class.pg_search_column} = _pg_search_vector
+              from (#{subquery.to_sql}) subquery
+              where id = subquery.id
           SQL
         )
       end
     end
 
     def update_pg_search_column
+      subquery = self.class.pg_search_tsvector_scope.where(id: id)
+
       ActiveRecord::Base.connection.execute(
         <<-SQL.squish
-            update #{self.class.table_name}
-              #{self.class.pg_search_tsvector_joins}
-              set #{self.class.pg_search_column} = #{self.class.pg_search_computed_vector_sql}
-              where id = #{id}
-          SQL
+          update #{self.class.table_name}
+            set #{self.class.pg_search_column} = _pg_search_vector
+            from (#{subquery.to_sql}) subquery
+            where id = #{id}
+        SQL
       )
     end
 
