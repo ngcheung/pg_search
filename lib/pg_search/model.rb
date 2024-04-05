@@ -28,7 +28,7 @@ module PgSearch
       end
 
       def pg_search_column(name, options)
-        class_attribute :pg_search_column, :pg_search_tsvector_scope
+        class_attribute :pg_search_column
         self.pg_search_column = name
 
         scope_options = ScopeOptions.new(Configuration.new(options, self))
@@ -38,26 +38,32 @@ module PgSearch
         end.join(' || ') + ' as _pg_search_vector'
 
         define_singleton_method(:pg_search_tsvector_scope) do
-          self.joins(scope_options.send(:subquery_join))
+          joins(scope_options.send(:subquery_join))
             .select(computed_vector_sql)
         end
 
-        define_singleton_method(:pg_search_reindex) do
-          ActiveRecord::Base.connection.execute(
-            <<-SQL.squish
-              update #{self.table_name}
-                set #{self.pg_search_column} = _pg_search_vector
-                from (#{self.select("#{self.table_name}.id").pg_search_tsvector_scope.to_sql}) subquery
-                where #{self.table_name}.id = subquery.id
-            SQL
-          )
-        end
-
-        after_save :update_pg_search_column
+        # TOODO: this doesn't work at all, query is too slow unless the join tables are only joining on one record
+        #   currently can only reindex by firing updates to postgres one by one
+        # define_singleton_method(:pg_search_reindex) do
+        #   ActiveRecord::Base.connection.execute(
+        #     <<-SQL.squish
+        #       update #{table_name}
+        #         set #{pg_search_column} = _pg_search_vector
+        #         from (#{select("#{table_name}.id").pg_search_tsvector_scope.to_sql}) subquery
+        #         where #{table_name}.id = subquery.id
+        #     SQL
+        #   )
+        # end
       end
     end
 
     def update_pg_search_column
+      return if previous_changes.blank?
+
+      update_pg_search_column!
+    end
+
+    def update_pg_search_column!
       ActiveRecord::Base.connection.execute(
         <<-SQL.squish
           update #{self.class.table_name}
